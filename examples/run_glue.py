@@ -66,10 +66,12 @@ from transformers import glue_output_modes as output_modes
 from transformers import glue_processors as processors
 from transformers import glue_convert_examples_to_features as convert_examples_to_features
 
+from transformers import BERT_PRETRAINED_CONFIG_ARCHIVE_MAP
+
 logger = logging.getLogger(__name__)
 
-ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig, XLNetConfig, XLMConfig, 
-                                                                                RobertaConfig, DistilBertConfig)), ())
+# ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig, XLNetConfig, XLMConfig, 
+#                                                                                 RobertaConfig, DistilBertConfig)), ())
 
 MODEL_CLASSES = {
     'bert': (BertConfig, BertForSequenceClassification, BertTokenizer),
@@ -385,7 +387,7 @@ def main():
     parser.add_argument("--model_type", default=None, type=str, required=True,
                         help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()))
     parser.add_argument("--model_name_or_path", default=None, type=str, required=True,
-                        help="Path to pre-trained model or shortcut name selected in the list: " + ", ".join(ALL_MODELS))
+                        help="Path to pre-trained model or shortcut name selected in the list: ")# + ", ".join(ALL_MODELS))
     parser.add_argument("--task_name", default=None, type=str, required=True,
                         help="The name of the task to train selected in the list: " + ", ".join(processors.keys()))
     parser.add_argument("--output_dir", default=None, type=str, required=True,
@@ -558,7 +560,7 @@ def main():
             print ("Froze Embedding Layer")
     #print (list(model.bert.embeddings.parameters()))
 
-    if freeze_layers is not "":
+    if freeze_layers != "":
         layer_indexes = [int(x) for x in freeze_layers.split(",")]
         for layer_idx in layer_indexes:
             for param in list(layer_list[layer_idx].parameters()):
@@ -578,7 +580,7 @@ def main():
 
         # check for model reduction
         remove_layers = args.remove_layers
-        if remove_layers is not "":
+        if remove_layers != "":
             layer_indexes = [int(x) for x in remove_layers.split(",")]
             layer_indexes.sort(reverse=True)
             for layer_idx in layer_indexes:
