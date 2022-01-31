@@ -23,6 +23,7 @@ import logging
 import os
 import random
 import json
+import time
 
 import numpy as np
 import torch
@@ -167,10 +168,16 @@ def train(args, train_dataset, model, tokenizer):
         logger.info("  Will skip the first %d steps in the first epoch", steps_trained_in_current_epoch)
 
     tr_loss, logging_loss = 0.0, 0.0
+    epoch_loss = 0.0
     model.zero_grad()
     train_iterator = trange(epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
-    for _ in train_iterator:
+    losses = {}
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    steps_log = open(args.output_dir+'steps_logging.txt', 'w')
+    for epoch, _ in enumerate(train_iterator):
+        epoch_loss = 0.0
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
 
@@ -201,6 +208,7 @@ def train(args, train_dataset, model, tokenizer):
                 loss.backward()
 
             tr_loss += loss.item()
+            epoch_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 if args.fp16:
                     torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
@@ -214,7 +222,7 @@ def train(args, train_dataset, model, tokenizer):
 
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     logs = {}
-                    if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
+                    if False and args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
                         results = evaluate(args, model, tokenizer)
                         for key, value in results.items():
                             eval_key = 'eval_{}'.format(key)
@@ -229,7 +237,10 @@ def train(args, train_dataset, model, tokenizer):
                     for key, value in logs.items():
                         # tb_writer.add_scalar(key, value, global_step)
                         pass
+
                     print(json.dumps({**logs, **{'step': global_step}}))
+                    steps_log.write(json.dumps({**logs, **{'step': global_step}}))
+
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     # Save model checkpoint
@@ -250,10 +261,30 @@ def train(args, train_dataset, model, tokenizer):
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
+
+        losses.update({'epoch_'+str(epoch):  epoch_loss / len(train_dataloader)})
+        output_loss_file = os.path.join(args.output_dir, "", "train_loss.txt")
+        with open(output_loss_file, "a") as writer:
+            logger.info("***** Loss results {} *****".format(""))
+            for key in sorted(losses.keys()):
+                logger.info("  %s = %s", key, str(losses[key]))
+                writer.write("%s = %s\n" % (key, str(losses[key])))
+
+        if args.local_rank == -1 and args.evaluate_during_training:  # Only evaluate when single GPU otherwise metrics may not average well
+            output_eval_file = os.path.join(args.output_dir, "", "train_eval.txt")
+            results = evaluate(args, model, tokenizer)
+            with open(output_eval_file, "a") as writer:
+                logger.info("***** Eval (train) results {} *****".format(""))
+                for key in sorted(results.keys()):
+                    logger.info(f"{epoch}_%s = %s", key, str(results[key]))
+                    writer.write(f"{epoch}_%s = %s\n" % (key, str(results[key])))
+
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
             break
 
+    steps_log.close()
+       
     if args.local_rank in [-1, 0]:
         # tb_writer.close()
         pass
@@ -291,6 +322,7 @@ def evaluate(args, model, tokenizer, prefix=""):
         nb_eval_steps = 0
         preds = None
         out_label_ids = None
+        tic = time.time()
         for batch in tqdm(eval_dataloader, desc="Evaluating"):
             model.eval()
             batch = tuple(t.to(args.device) for t in batch)
@@ -312,6 +344,9 @@ def evaluate(args, model, tokenizer, prefix=""):
             else:
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, inputs['labels'].detach().cpu().numpy(), axis=0)
+        toc = time.time()
+        time_evaluation = toc-tic
+        results.update({"time": time_evaluation})
 
         eval_loss = eval_loss / nb_eval_steps
         if args.output_mode == "classification":
@@ -320,6 +355,8 @@ def evaluate(args, model, tokenizer, prefix=""):
             preds = np.squeeze(preds)
         result = compute_metrics(eval_task, preds, out_label_ids)
         results.update(result)
+        results['time'] = time_evaluation
+        
 
         output_eval_file = os.path.join(eval_output_dir, prefix, "eval_results.txt")
         with open(output_eval_file, "w") as writer:
